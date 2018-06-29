@@ -165,9 +165,10 @@ class RGWAdmin:
         else:
             return None
 
-    def get_user(self, uid):
-        return self.request('get', '/%s/user?format=%s&uid=%s' %
-                            (self._admin, self._response, uid))
+    def get_user(self, uid, stats=False):
+        parameters = '&uid=%s&stats=%s' % (uid, stats)
+        return self.request('get', '/%s/user?format=%s%s'
+                            (self._admin, self._response, parameters))
 
     def get_users(self):
         return self.get_metadata(metadata_type='user')
