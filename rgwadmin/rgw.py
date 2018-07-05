@@ -167,7 +167,7 @@ class RGWAdmin:
 
     def get_user(self, uid, stats=False):
         parameters = '&uid=%s&stats=%s' % (uid, stats)
-        return self.request('get', '/%s/user?format=%s%s'
+        return self.request('get', '/%s/user?format=%s%s' %
                             (self._admin, self._response, parameters))
 
     def get_users(self):
