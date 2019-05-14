@@ -11,6 +11,7 @@ import random
 import requests
 from awsauth import S3Auth
 
+from .compat import quote
 from .exceptions import (
     RGWAdminException, AccessDenied, UserExists,
     InvalidAccessKey, InvalidSecretKey, InvalidKeyType,
@@ -28,9 +29,10 @@ try:
 except AttributeError:
     LETTERS = string.letters
 
+
 class RGWAdmin:
 
-    metadata_types = ['user', 'bucket']
+    metadata_types = ['user', 'bucket', 'bucket.instance']
 
     def __init__(self, access_key, secret_key, server,
                  admin='admin', response='json', ca_bundle=None,
@@ -53,16 +55,20 @@ class RGWAdmin:
 
     @classmethod
     def connect(cls, **kwargs):
-        # set the connection on RGWAdmin
-        # note: only one connection can be active in any single process
+        """Establish a new connection to RGWAdmin
+
+        Only one connection can be active in any single process
+        """
         cls.set_connection(RGWAdmin(**kwargs))
 
     @classmethod
     def set_connection(cls, connection):
+        """Set a connection for the RGWAdmin session to use."""
         cls.connection = connection
 
     @classmethod
     def get_connection(cls):
+        """Return the RGWAdmin connection that was set"""
         return cls.connection
 
     def __repr__(self):
@@ -107,10 +113,9 @@ class RGWAdmin:
             return None
         else:
             if j is not None:
-                log.error(j)
                 code = str(j.get('Code', 'InternalError'))
             else:
-                raise ServerDown
+                raise ServerDown(None)
             for e in [AccessDenied, UserExists, InvalidAccessKey,
                       InvalidKeyType, InvalidSecretKey, KeyExists, EmailExists,
                       SubuserExists, InvalidAccess, InvalidArgument,
@@ -120,8 +125,8 @@ class RGWAdmin:
                       NoSuchKey, IncompleteBody, BucketAlreadyExists,
                       InternalError]:
                 if code == e.__name__:
-                    raise e
-            raise RGWAdminException(code)
+                    raise e(j)
+            raise RGWAdminException(code, raw=j)
 
     def request(self, method, request, headers=None, data=None):
         url = '%s%s' % (self.get_base_url(), request)
@@ -139,31 +144,84 @@ class RGWAdmin:
             r = m(url, headers=headers, auth=auth, verify=verify, data=data,
                   timeout=self._timeout)
         except Exception as e:
-            log.exception(e)
-            raise
+            raise e
         return self._load_request(r)
 
-    def get_metadata(self, metadata_type, key=None):
-        ''' Returns a JSON object '''
-        if metadata_type in ['user', 'bucket']:
-            request_string = '/%s/metadata/%s?format=%s' % \
-                (self._admin, metadata_type, self._response)
-            if key is not None:
-                request_string += '&key=%s' % key
-            return self.request('get', request_string)
-        else:
-            return None
+    def _request_metadata(self, method, metadata_type, params=None,
+                          headers=None, data=None):
+        if metadata_type not in self.metadata_types:
+            raise Exception("Bad metadata_type")
 
-    def set_metadata(self, metadata_type, key, json_string):
-        if metadata_type in self.metadata_types:
-            return self.request(
-                'put', '/%s/metadata/%s?key=%s' %
-                (self._admin, metadata_type, key),
-                headers={'Content-Type': 'application/json'},
-                data=json_string,
+        if params is None:
+            params = {}
+        params = '&'.join(['%s=%s' % (k, v) for k, v in params.items()])
+        request = '/%s/metadata/%s?%s' % (self._admin, metadata_type, params)
+        return self.request(
+            method=method,
+            request=request,
+            headers=headers,
+            data=data
+        )
+
+    def get_metadata(self, metadata_type, key=None, max_entries=None,
+                     marker=None, headers=None):
+        ''' Returns a JSON object representation of the metadata '''
+        params = {'format': self._response}
+        if key is not None:
+            params['key'] = key
+        if marker is not None:
+            params['marker'] = quote(marker)
+        if max_entries is not None:
+            params['max-entries'] = max_entries
+        return self._request_metadata(
+            method='get',
+            metadata_type=metadata_type,
+            params=params,
+            headers=headers,
+        )
+
+    def put_metadata(self, metadata_type, key, json_string):
+        return self._request_metadata(
+            method='put',
+            metadata_type=metadata_type,
+            params={'key': key},
+            headers={'Content-Type': 'application/json'},
+            data=json_string)
+
+    # Alias for compatability:
+    set_metadata = put_metadata
+
+    def delete_metadata(self, metadata_type, key):
+        return self._request_metadata(
+            method='delete',
+            metadata_type=metadata_type,
+            params={'key': key},
+        )
+
+    def lock_metadata(self, metadata_type, key, lock_id, length):
+        params = {
+            'lock': 'lock',
+            'key': key,
+            'lock_id': lock_id,
+            'length': int(length),
+        }
+        return self._request_metadata(
+            method='post',
+            metadata_type=metadata_type,
+            params=params,
+        )
+
+    def unlock_metadata(self, metadata_type, key, lock_id):
+        params = {
+            'unlock': 'unlock',
+            'key': key,
+            'lock_id': lock_id,
+        }
+        return self._request_metadata(
+            method='post',
+            metadata_type=metadata_type,
+            params=params,
             )
-        else:
-            return None
 
     def get_user(self, uid, stats=False):
         parameters = '&uid=%s&stats=%s' % (uid, stats)
@@ -222,7 +280,7 @@ class RGWAdmin:
 
     def modify_user(self, uid, display_name=None, email=None, key_type='s3',
                     access_key=None, secret_key=None, user_caps=None,
-                    generate_key=True, max_buckets=None, suspended=False):
+                    generate_key=False, max_buckets=None, suspended=False):
         parameters = 'uid=%s' % uid
         if display_name is not None:
             parameters += '&display-name=%s' % display_name
@@ -257,18 +315,44 @@ class RGWAdmin:
         '''Return the quota set on every bucket owned/created by a user'''
         return self.get_quota(uid=uid, quota_type='bucket')
 
-    def set_quota(self, uid, quota_type, max_size_kb=None, max_objects=None,
-                  enabled=None):
+    @staticmethod
+    def _quota(max_size_kb=None, max_objects=None, enabled=None):
+        quota = ''
+        if max_size_kb is not None:
+            quota += '&max-size-kb=%d' % max_size_kb
+        if max_objects is not None:
+            quota += '&max-objects=%d' % max_objects
+        if enabled is not None:
+            quota += '&enabled=%s' % str(enabled).lower()
+        return quota
+
+    def set_user_quota(self, uid, quota_type, max_size_kb=None,
+                       max_objects=None, enabled=None):
+        '''
+        Set quotas on users and buckets owned by users
+
+        If `quota_type` is user, then the quota applies to the user.  If
+        `quota_type` is bucket, then the quota applies to buckets owned by
+        the specified uid.
+
+        If you want to set a quota on an individual bucket, then use
+        set_bucket_quota() instead.
+        '''
         if quota_type not in ['user', 'bucket']:
             raise InvalidQuotaType
-        parameters = 'uid=%s&quota-type=%s' % (uid, quota_type)
-        if max_size_kb is not None:
-            parameters += '&max-size-kb=%d' % max_size_kb
-        if max_objects is not None:
-            parameters += '&max-objects=%d' % max_objects
-        if enabled is not None:
-            parameters += '&enabled=%s' % str(enabled).lower()
+        quota = self._quota(max_size_kb=max_size_kb, max_objects=max_objects,
+                            enabled=enabled)
+        parameters = 'uid=%s&quota-type=%s%s' % (uid, quota_type, quota)
         return self.request('put', '/%s/user?quota&format=%s&%s' %
+                            (self._admin, self._response, parameters))
+
+    def set_bucket_quota(self, uid, bucket, max_size_kb=None,
+                         max_objects=None, enabled=None):
+        '''Set the quota on an individual bucket'''
+        quota = self._quota(max_size_kb=max_size_kb, max_objects=max_objects,
+                            enabled=enabled)
+        parameters = 'uid=%s&bucket=%s%s' % (uid, bucket, quota)
+        return self.request('put', '/%s/bucket?quota&format=%s&%s' %
                             (self._admin, self._response, parameters))
 
     def remove_user(self, uid, purge_data=False):
@@ -359,9 +443,6 @@ class RGWAdmin:
         return self.request('get', '/%s/bucket?index&format=%s&%s' %
                             (self._admin, self._response, parameters))
 
-    def create_bucket(self, bucket):
-        return self.request('put', '/%s' % bucket)
-
     def remove_bucket(self, bucket, purge_objects=False):
         parameters = 'bucket=%s' % bucket
         parameters += '&purge-objects=%s' % purge_objects
@@ -400,6 +481,10 @@ class RGWAdmin:
         parameters = 'uid=%s&user-caps=%s' % (uid, user_caps)
         return self.request('delete', '/%s/user?caps&format=%s&%s' %
                             (self._admin, self._response, parameters))
+
+    def get_bucket_instances(self):
+        '''Returns a list of all bucket instances in the radosgw'''
+        return self.get_metadata(metadata_type='bucket.instance')
 
     @staticmethod
     def parse_rados_datestring(s):

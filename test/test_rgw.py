@@ -6,6 +6,7 @@ import unittest
 import random
 from rgwadmin.exceptions import InvalidArgument
 from rgwadmin.utils import get_environment_creds
+from . import create_bucket
 
 logging.basicConfig(level=logging.WARNING)
 
@@ -13,7 +14,8 @@ logging.basicConfig(level=logging.WARNING)
 class RGWAdminTest(unittest.TestCase):
 
     def setUp(self):
-        self.rgw = rgwadmin.RGWAdmin(secure=False, verify=False, **get_environment_creds())
+        self.rgw = rgwadmin.RGWAdmin(
+            secure=False, verify=False, **get_environment_creds())
         self.user1 = 'foo1209'
         self.user2 = 'foo1213'
         self.user3 = 'bar3142'
@@ -35,9 +37,19 @@ class RGWAdminTest(unittest.TestCase):
         self.rgw.remove_user(uid=self.user2)
 
     def test_modify_user(self):
+        before_keys = self.user1_obj['keys']
         user = self.rgw.modify_user(uid=self.user1,
                                     email='%s@test.com' % self.user1)
         self.assertTrue(user['email'] == '%s@test.com' % self.user1)
+
+        # ensure that generate_key is False and that new keys are not
+        # being created by default when modifying the user.
+        self.assertEqual(before_keys, user['keys'])
+
+        # generate_key=True should add an extra pair of keys
+        user = self.rgw.modify_user(uid=self.user1, generate_key=True)
+        self.assertNotEqual(before_keys, user['keys'])
+        self.assertEqual(len(before_keys) + 1, len(user['keys']))
 
     def test_duplicate_email(self):
         with self.assertRaises(InvalidArgument):
@@ -57,14 +69,23 @@ class RGWAdminTest(unittest.TestCase):
 
     def test_user_quota(self):
         size = random.randint(1000, 1000000)
-        self.rgw.set_quota(uid=self.user1, quota_type='user',
-                           max_size_kb=size, enabled=True)
+        self.rgw.set_user_quota(uid=self.user1, quota_type='user',
+                                max_size_kb=size, enabled=True)
         user1_quota_info = self.rgw.get_user_quota(uid=self.user1)
         self.assertTrue(size == user1_quota_info['max_size_kb'])
 
+    def test_bucket_quota(self):
+        size = random.randint(1000, 1000000)
+        bucket_name = self.user1 + '_bucket'
+        create_bucket(self.rgw, bucket=bucket_name)
+        self.rgw.set_bucket_quota(uid=self.user1, bucket=bucket_name,
+                                  max_size_kb=size, enabled=True)
+        bucket = self.rgw.get_bucket(bucket=bucket_name)
+        self.assertTrue(bucket['bucket_quota']['max_size_kb'] == size)
+
     def test_bucket(self):
         bucket_name = self.user1 + '_bucket'
-        self.rgw.create_bucket(bucket=bucket_name)
+        create_bucket(self.rgw, bucket=bucket_name)
         bucket = self.rgw.get_bucket(bucket=bucket_name)
         self.rgw.link_bucket(bucket=bucket_name, bucket_id=bucket['id'],
                              uid=self.user1)

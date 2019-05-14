@@ -3,7 +3,6 @@ try:
     from collections import OrderedDict
 except ImportError:
     from ordereddict import OrderedDict
-import json
 from .utils import random_password
 from .rgw import RGWAdmin
 from .exceptions import NoSuchKey
@@ -12,8 +11,9 @@ log = logging.getLogger(__name__)
 
 try:
     unicode
-except:
+except NameError:
     unicode = str
+
 
 class AttributeMixin(object):
     attrs = []
@@ -145,9 +145,9 @@ class RGWQuota(AttributeMixin):
 class RGWUser(AttributeMixin):
     attrs = ['user_id', 'display_name', 'email', 'caps', 'keys',
              'max_buckets', 'suspended', 'swift_keys', 'subusers',
-             'placement_tags', 'auid', 'bucket_quota', 'user_quota',
+             'placement_tags', 'bucket_quota', 'user_quota',
              'default_placement', 'op_mask', 'temp_url_keys']
-    modify_attrs_mask = ['placement_tags', 'auid', 'default_placement',
+    modify_attrs_mask = ['placement_tags', 'default_placement',
                          'op_mask', 'temp_url_keys']
     sub_attrs = OrderedDict([('caps', RGWCap),
                              ('keys', RGWKey),
@@ -211,8 +211,8 @@ class RGWUser(AttributeMixin):
         d = self._modify_dict()
         log.debug('Modify existing user %s %s' % (self.user_id, d))
         rgw.modify_user(**d)
-        rgw.set_quota(self.user_id, 'user', **self.user_quota.to_dict())
-        rgw.set_quota(self.user_id, 'bucket', **self.bucket_quota.to_dict())
+        rgw.set_user_quota(self.user_id, 'user', **self.user_quota.to_dict())
+        rgw.set_user_quota(self.user_id, 'bucket', **self.bucket_quota.to_dict())
 
     def delete(self):
         rgw = RGWAdmin.get_connection()
@@ -283,7 +283,7 @@ class RGWUser(AttributeMixin):
         '''Return flat dict representation of the object'''
         d = {}
         for attr in self.attrs:
-            if not attr in self.modify_attrs_mask+list(self.sub_attrs.keys()):
+            if attr not in self.modify_attrs_mask+list(self.sub_attrs.keys()):
                 d[attr] = getattr(self, attr)
         d['uid'] = d.pop('user_id')
         d['generate_key'] = False

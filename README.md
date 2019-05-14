@@ -1,6 +1,8 @@
-# RadosGWAdmin
+# rgwadmin
 
-This is a Python library to allow access to the Ceph Object Storage Admin API.
+[![Documentation Status](https://readthedocs.org/projects/rgwadmin/badge/?version=latest)](https://rgwadmin.readthedocs.io/en/latest/?badge=latest)
+
+rgwadmin is a Python library to access the Ceph Object Storage Admin API.
 
 http://docs.ceph.com/docs/master/radosgw/adminops/
 
@@ -17,7 +19,7 @@ rgw.create_user(
     email='liam@umiacs.umd.edu',
     user_caps='usage=read, write; users=read',
     max_buckets=1000)
-rgw.set_quota(
+rgw.set_user_quota(
     uid='liam',
     quota_type='user',
     max_size_kb=1024*1024,

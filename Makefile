@@ -13,13 +13,16 @@ REQUIRES := $(PYTHON),$(PYTHON)-requests,$(PYTHON)-requests-aws
 
 .PHONY: rpm
 rpm:
-	-mkdir dist
-	-mkdir $(DIST_DIR)
+	-mkdir -p $(DIST_DIR)
 	$(PYTHON) setup.py bdist_rpm \
 			--python=$(PYTHON) \
 			--requires="$(REQUIRES)" \
 			--dist-dir=$(DIST_DIR) \
 			--binary-only
+
+.PHONY: sdist
+sdist:
+	python setup.py sdist
 
 .PHONY: tag
 tag:
@@ -27,12 +30,6 @@ tag:
 	$(GIT) add $(PACKAGE)/__init__.py
 	$(GIT) commit -m "Tagging $(VERSION)"
 	$(GIT) tag -a $(VERSION) -m "Tagging $(VERSION)"
-
-.PHONY: upload
-upload: clean
-	python setup.py sdist
-	twine upload dist/*
-	twine upload -r umiacs dist/*
 
 .PHONY: clean
 clean:
